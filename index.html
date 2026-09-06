@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Doxa Playground</title>
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{font:16px system-ui;margin:0;background:#10141c;color:#edf2fa}main{max-width:850px;margin:auto;padding:18px}h1{font-size:26px;margin-bottom:6px}h2{font-size:18px}.card{background:#19202c;border:1px solid #364154;border-radius:14px;padding:16px;margin:14px 0}.small{font-size:14px;color:#b1bed0;line-height:1.6}label{display:block;margin:12px 0 6px}button,select,input,textarea{font:inherit;color:inherit;background:#10141c;border:1px solid #63728b;border-radius:8px;padding:12px;max-width:100%;min-height:46px}select,input,textarea{width:100%}button{cursor:pointer;margin:8px 8px 0 0}textarea{min-height:280px;font:16px ui-monospace,monospace;tab-size:2}summary{cursor:pointer;padding:8px 0}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0}.metrics div{background:#10141c;border-radius:9px;padding:10px}.metrics b{display:block;font-size:22px}.proof{border-top:1px solid #364154;padding:10px 0;overflow-wrap:anywhere}#status{padding:12px;border-left:4px solid #e7b65b;background:#28251f;line-height:1.5}#status.ready{border-color:#74d3ac;background:#172b26}#error{color:#ffb4ae;white-space:pre-wrap}a{color:#aed0ff}.actions{display:flex;flex-wrap:wrap}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+</style>
+</head>
+<body><main>
+<h1>Doxa Playground</h1>
+<p class="small">Epistemik-Labor · Web-Version 0.2 · Keine vollständige Doxa-Engine</p>
+<p id="status" role="status">JavaScript ist noch nicht gestartet. Bleibt dieser Hinweis stehen, zeigt dein Viewer möglicherweise nur eine Dateivorschau. Öffne die veröffentlichte Webseite in Safari.</p>
+<noscript><p>Diese interaktive App benötigt JavaScript. Eine reine HTML-Vorschau reicht nicht.</p></noscript>
+<section class="card">
+<label for="example">Szenario</label><select id="example" disabled><option>App noch nicht gestartet</option></select>
+<button id="next" disabled>Nächstes Szenario</button>
+<p id="description" class="small"></p>
+<label for="profile">Bewertungsprofil – Wechsel berechnet alles neu</label>
+<select id="profile"><option value="minmax">Min / Max + Konfliktabzug</option><option value="productmax">Produkt / Max mit gemeinsamen Ursprüngen</option><option value="netminmax">Netto-Unterstützung / Min / Max</option></select>
+<p class="small">Alle Formeln sind Versuchsprofile, keine Wahrscheinlichkeiten. Konflikte werden berücksichtigt, aber nicht in Gegenbelege zur Folgerung umgewandelt.</p>
+</section>
+<section class="card">
+<label for="query">Abgefragte Aussage</label><input id="query" autocomplete="off" spellcheck="false">
+<button id="run">Auswerten</button>
+<p id="error" role="alert"></p><div id="out" aria-live="polite"></div><div id="proof"></div>
+</section>
+<section class="card"><details><summary>Daten einfügen, importieren oder sichern</summary>
+<p class="small">Normalerweise reicht die Szenarioauswahl. Hier kannst du JSON aus unserem Chat einfügen. Importierte Namen werden ausschließlich als Text angezeigt.</p>
+<label for="source">Szenario-JSON</label><textarea id="source" spellcheck="false"></textarea>
+<div class="actions"><button id="apply">Daten auswerten</button><button id="export">JSON exportieren</button></div>
+<label for="file">JSON-Datei importieren</label><input id="file" type="file" accept=".json,application/json">
+<p class="small" id="storage">Speicherung: lokal in diesem Browser, ohne Geräte-Synchronisation. Exportiere wichtige Versuche als JSON.</p>
+</details></section>
+<section class="card small"><details><summary>Grenzen und genaue Formeln</summary>
+<p>Nur benannte, bereits konkrete Aussagen und azyklische Regeln. Keine Variablen, Defaults, negativen Voraussetzungen, vollständige DSL, Ledger oder Rechteverwaltung. Zyklen und Budgetüberschreitungen werden als Fehler zurückgewiesen, nicht als falsches Ergebnis.</p>
+<p>Min/Max und Produkt/Max verwenden als Konfliktfaktor (1 − d)². Netto-Min/Max verwendet max(0, b − d) × (1 − d). Diese Formeln sind bewusst vorläufig. Alternative Begründungen werden per Max aggregiert. Beide Kanäle bleiben getrennt.</p>
+<p>Produkt/Max führt Herkunftsfaktoren vor der Multiplikation zusammen. Derselbe Faktor zählt im Ableitungsweg einmal. Unterschiedliche Ursprünge gelten damit nicht als nachgewiesen statistisch unabhängig. Konfliktfaktoren sind an die jeweils verwendete Aussage gebunden.</p>
+<p>Die Labels true/false/both/neither beschreiben vorhandene Evidenzkanäle, nicht bewiesene Wahrheit. Eine Profilwahl gilt für den gesamten Versuch. Ein Wechsel ist eine neue Auswertung.</p>
+</details></section>
+</main>
+<script>
+'use strict';
+function evaluate(data, profile) {
+  if (!['minmax','productmax','netminmax'].includes(profile)) throw Error('Unbekanntes Profil.');
+  if (!data || !Array.isArray(data.facts) || !Array.isArray(data.rules)) throw Error('facts und rules müssen Listen sein.');
+  if (Object.keys(data).some(k => !['facts','rules'].includes(k))) throw Error('Unbekannte Felder im Wissensbestand.');
+  if (data.facts.length > 128 || data.rules.length > 64) throw Error('Budget: maximal 128 Fakten und 64 Regeln.');
+  const text = x => typeof x === 'string' && x.length > 0 && x.length <= 160;
+  const roots = new Map(), nodes = new Set(), edges = new Map(), incoming = new Map();
+  function record(x, i, rule) {
+    if (!x || !text(x.name)) throw Error('Jeder Eintrag braucht einen kurzen Namen.');
+    const allowed = rule ? ['name','premises','consequence','b','d','root'] : ['name','b','d','root'];
+    if (Object.keys(x).some(k => !allowed.includes(k))) throw Error('Nicht unterstütztes Feld bei ' + x.name);
+    const b = x.b === undefined ? 1 : x.b, d = x.d === undefined ? 0 : x.d;
+    if ([b,d].some(w => typeof w !== 'number' || !Number.isFinite(w) || w < 0 || w > 1)) throw Error('b und d müssen Zahlen zwischen 0 und 1 sein.');
+    const root = x.root === undefined ? (rule ? 'rule:' : 'fact:') + i : x.root;
+    if (!text(root)) throw Error('Ungültiger Evidenzursprung.');
+    const signature = JSON.stringify([b,d]);
+    if (roots.has(root) && roots.get(root) !== signature) throw Error('Ein gemeinsam verwendeter Ursprung muss dieselben b/d-Werte tragen: ' + root);
+    roots.set(root, signature);
+    if (rule && (!Array.isArray(x.premises) || x.premises.length > 12 || !x.premises.every(text) || !text(x.consequence))) throw Error('Ungültige Regel: ' + x.name);
+    return {...x,b,d,root,premises:rule ? [...new Set(x.premises)] : []};
+  }
+  const facts = data.facts.map((x,i) => record(x,i,false));
+  const rules = data.rules.map((x,i) => record(x,i,true));
+  for (const f of facts) nodes.add(f.name);
+  for (const r of rules) { nodes.add(r.consequence); for (const p of r.premises) nodes.add(p); }
+  for (const n of nodes) { edges.set(n,new Set()); incoming.set(n,0); }
+  for (const r of rules) for (const p of r.premises) if (!edges.get(p).has(r.consequence)) { edges.get(p).add(r.consequence); incoming.set(r.consequence,incoming.get(r.consequence)+1); }
+  const queue = [...nodes].filter(n => incoming.get(n) === 0).sort(), order = [];
+  while (queue.length) { const n = queue.shift(); order.push(n); for (const m of edges.get(n)) { incoming.set(m,incoming.get(m)-1); if (incoming.get(m) === 0) queue.push(m); } queue.sort(); }
+  if (order.length !== nodes.size) throw Error('Zyklus erkannt. Dieser Prototyp unterstützt nur azyklische Regeln.');
+  const states = new Map(), proofs = new Map(); let work = 0;
+  const sourceKey = (root,pol) => JSON.stringify(['source',root,pol]);
+  const value = factors => { const v = [...factors.entries()].sort((a,b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0).reduce((a,item) => a*item[1],1); if (v === 0 && [...factors.values()].every(x => x > 0)) throw Error('Numerischer Unterlauf: Ergebnis nicht auswertbar.'); return v; };
+  function add(n,pol,w,factors,origins,why) {
+    if (!(w > 0)) return;
+    if (++work > 5000) throw Error('Ableitungsbudget überschritten. Kein vollständiges Ergebnis.');
+    const list = proofs.get(n), key = JSON.stringify([pol,[...factors.entries()].sort((a,b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)]);
+    const old = list.find(p => p.key === key);
+    if (old && old.w >= w) return;
+    if (old) list.splice(list.indexOf(old),1);
+    list.push({pol,w,factors,roots:[...origins].sort(),why,key});
+  }
+  for (const n of order) {
+    proofs.set(n,[]);
+    for (const f of facts.filter(f => f.name === n)) for (const pol of ['b','d']) add(n,pol,f[pol],new Map([[sourceKey(f.root,pol),f[pol]]]),new Set([f.root]),'Direkte Evidenz: ' + f.name);
+    for (const r of rules.filter(r => r.consequence === n)) {
+      let combinations = [[]];
+      for (const p of r.premises) {
+        const supports = proofs.get(p).filter(x => x.pol === 'b');
+        if (combinations.length * supports.length > 5000) throw Error('Zu viele Begründungskombinationen. Kein vollständiges Ergebnis.');
+        combinations = combinations.flatMap(c => supports.map(s => [...c,s]));
+      }
+      for (const selected of combinations) for (const pol of ['b','d']) {
+        if (r[pol] === 0) continue;
+        const factors = new Map([[sourceKey(r.root,pol),r[pol]]]), origins = new Set([r.root]);
+        let w = r[pol];
+        selected.forEach((proof,i) => {
+          const premise = r.premises[i], d = states.get(premise).d;
+          for (const [key,v] of proof.factors) factors.set(key,v);
+          for (const root of proof.roots) origins.add(root);
+          factors.set(JSON.stringify(['conflict',premise]),(1-d)**2);
+          const reliable = profile === 'netminmax' ? Math.max(0,proof.w-d)*(1-d) : proof.w*(1-d)**2;
+          w = Math.min(w,reliable);
+        });
+        if (profile === 'productmax') w = value(factors);
+        add(n,pol,w,factors,origins,'Regel ' + r.name + ' über ' + (r.premises.join(' UND ') || 'leere Voraussetzung'));
+      }
+    }
+    const list = proofs.get(n);
+    states.set(n,{b:Math.max(0,...list.filter(x => x.pol === 'b').map(x => x.w)),d:Math.max(0,...list.filter(x => x.pol === 'd').map(x => x.w))});
+  }
+  return {states,proofs};
+}
+const EXAMPLES = [
+ {id:'maybe',title:'Vielleicht Vogel → vielleicht flugfähig',description:'Eine sichere Regel macht die unsichere Ausgangsinformation nicht sicher.',query:'can_fly:tweety',data:{facts:[{name:'bird:tweety',b:.8,d:0,root:'observation'}],rules:[{name:'birds-fly',premises:['bird:tweety'],consequence:'can_fly:tweety',b:1,d:0}]}},
+ {id:'conflict',title:'Konflikt in einer Voraussetzung',description:'Der Konflikt schwächt die Begründung. Er erzeugt keine Gegenbelege gegen die Folgerung.',query:'mortal:alice',data:{facts:[{name:'human:alice',b:.8,d:.6}],rules:[{name:'humans-mortal',premises:['human:alice'],consequence:'mortal:alice',b:1,d:0}]}},
+ {id:'opposition',title:'Fast nur Gegenbelege zur Voraussetzung',description:'Nicht-Mensch bedeutet nicht automatisch nicht-sterblich.',query:'mortal:alice',data:{facts:[{name:'human:alice',b:.1,d:.9}],rules:[{name:'humans-mortal',premises:['human:alice'],consequence:'mortal:alice',b:1,d:0}]}},
+ {id:'negative-rule',title:'Eine Regel liefert Gegenbelege',description:'Das d der anwendbaren Regel gehört zur Folgerung, nicht zu einer automatischen Umkehrung der Voraussetzung.',query:'immortal:alice',data:{facts:[{name:'human:alice',b:1,d:0}],rules:[{name:'human-immortal',premises:['human:alice'],consequence:'immortal:alice',b:.1,d:.9}]}},
+ {id:'diamond',title:'Gemeinsamer Ursprung zählt einmal',description:'A → B und A → C; B UND C → D. Auch Produkt/Max muss hier 0,8 statt 0,64 liefern.',query:'d:x',data:{facts:[{name:'a:x',b:.8,d:0,root:'shared'}],rules:[{name:'a-b',premises:['a:x'],consequence:'b:x',b:1,d:0},{name:'a-c',premises:['a:x'],consequence:'c:x',b:1,d:0},{name:'bc-d',premises:['b:x','c:x'],consequence:'d:x',b:1,d:0}]}},
+ {id:'direct',title:'Unabhängige direkte Beobachtung',description:'Ein umstrittener anderer Ableitungsweg schwächt die direkte Beobachtung zu C nicht.',query:'c:x',data:{facts:[{name:'a:x',b:1,d:0},{name:'b:x',b:.8,d:.6},{name:'c:x',b:.9,d:0}],rules:[{name:'ab-c',premises:['a:x','b:x'],consequence:'c:x',b:1,d:0}]}},
+ {id:'chain',title:'Zwei unterschiedliche Unsicherheiten',description:'Voraussetzung 0,8 und Regel 0,9: Min/Max liefert 0,8, Produkt/Max 0,72.',query:'b:x',data:{facts:[{name:'a:x',b:.8,d:0}],rules:[{name:'a-b',premises:['a:x'],consequence:'b:x',b:.9,d:0}]}}
+];
+const $ = id => document.getElementById(id);
+const els = Object.fromEntries(['example','profile','source','query','status','description','error','out','proof','storage'].map(id => [id,$(id)]));
+let catalog = EXAMPLES.slice();
+function save() { try { localStorage.setItem('doxa-web-v02',JSON.stringify({data:JSON.parse(els.source.value),query:els.query.value,profile:els.profile.value})); } catch (_) { els.storage.textContent = 'Lokale Speicherung nicht verfügbar. Du kannst JSON weiterhin exportieren.'; } }
+function run() {
+  els.error.textContent = ''; els.out.replaceChildren(); els.proof.replaceChildren();
+  try {
+    const q = els.query.value.trim(); if (!q) throw Error('Bitte eine Aussage abfragen.');
+    const result = evaluate(JSON.parse(els.source.value),els.profile.value), s = result.states.get(q) || {b:0,d:0};
+    const classification = s.b > 0 ? (s.d > 0 ? 'both' : 'true') : (s.d > 0 ? 'false' : 'neither');
+    const metrics = document.createElement('div'); metrics.className = 'metrics';
+    for (const [label,v] of [['Support b',s.b],['Gegenbelege d',s.d],['Zustand',classification]]) { const box = document.createElement('div'), title = document.createElement('span'), strong = document.createElement('b'); title.textContent = label; title.className = 'small'; strong.textContent = typeof v === 'number' ? (v > 0 && v < .001 ? v.toExponential(2) : v.toFixed(3)) : v; box.append(title,strong); metrics.append(box); }
+    els.out.append(metrics);
+    const list = result.proofs.get(q) || [];
+    if (!list.length) els.proof.textContent = 'Keine aktive Evidenz für diese Aussage.';
+    for (const p of list) { const div = document.createElement('div'); div.className = 'proof small'; div.textContent = p.pol + ' = ' + p.w.toPrecision(4) + ' · ' + p.why + '\nUrsprünge: ' + p.roots.join(', '); els.proof.append(div); }
+    save();
+  } catch (e) { els.error.textContent = e.message; }
+}
+function load(index) { const s = catalog[index]; els.example.value = String(index); els.description.textContent = s.description || ''; els.source.value = JSON.stringify(s.data,null,2); els.query.value = s.query; run(); }
+function populate() { els.example.replaceChildren(); catalog.forEach((s,i) => { const option = document.createElement('option'); option.value = String(i); option.textContent = s.title; els.example.append(option); }); els.example.disabled = false; $('next').disabled = false; }
+function importData(value) { if (!value || !value.data || typeof value.query !== 'string') throw Error('Importformat: {"data":{"facts":[],"rules":[]},"query":"…"}'); const p = value.profile || els.profile.value; evaluate(value.data,p); els.source.value = JSON.stringify(value.data,null,2); els.query.value = value.query; els.profile.value = p; els.description.textContent = 'Importierter oder wiederhergestellter Versuch'; run(); }
+els.example.addEventListener('change',() => load(Number(els.example.value)));
+$('next').addEventListener('click',() => load((Number(els.example.value)+1)%catalog.length));
+els.profile.addEventListener('change',run); $('run').addEventListener('click',run); $('apply').addEventListener('click',run);
+$('export').addEventListener('click',() => { try { const data = JSON.parse(els.source.value); evaluate(data,els.profile.value); const url = URL.createObjectURL(new Blob([JSON.stringify({data,query:els.query.value,profile:els.profile.value},null,2)],{type:'application/json'})); const a = document.createElement('a'); a.href = url; a.download = 'doxa-versuch.json'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url),60000); } catch (e) { els.error.textContent = e.message; } });
+$('file').addEventListener('change',async event => { try { const f = event.target.files[0]; if (!f) return; if (f.size > 100000) throw Error('Datei zu groß (maximal 100 KB).'); importData(JSON.parse(await f.text())); } catch (e) { els.error.textContent = e.message; } finally { event.target.value = ''; } });
+let stored = null;
+try { stored = localStorage.getItem('doxa-web-v02'); } catch (_) { /* Storage is optional. */ }
+populate(); load(0);
+try { if (stored) importData(JSON.parse(stored)); } catch (_) { /* Invalid saved data never prevents startup. */ }
+els.status.textContent = 'App gestartet · ' + catalog.length + ' Szenarien bereit · Datenverarbeitung lokal'; els.status.className = 'ready';
+fetch('./scenarios.json',{cache:'no-store'}).then(r => { if (!r.ok) throw Error('Kein zusätzlicher Katalog'); return r.json(); }).then(items => { if (!Array.isArray(items) || items.length > 100) throw Error('Ungültiger Katalog'); const additions = items.filter(s => s && typeof s.id === 'string' && !catalog.some(x => x.id === s.id)); for (const s of additions) { if (typeof s.title !== 'string' || typeof s.query !== 'string') throw Error('Ungültiges Szenario'); evaluate(s.data,'minmax'); } const selected = els.example.value; catalog.push(...additions); populate(); els.example.value = selected; els.status.textContent = 'App gestartet · ' + catalog.length + ' Szenarien bereit · Datenverarbeitung lokal'; }).catch(() => { /* Embedded examples remain usable when the catalog is unavailable. */ });
+</script></body></html>
