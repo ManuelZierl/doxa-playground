@@ -1,0 +1,15 @@
+[
+  {
+    "id": "two-confirmations",
+    "title": "Zwei Bestätigungen: Max verstärkt nicht",
+    "description": "Zwei unterschiedlich bezeichnete Ursprünge mit jeweils 0,6. Die aktuellen Max-Profile bleiben bei 0,6, statt die Belege zu verstärken.",
+    "query": "confirmed:x",
+    "data": {
+      "facts": [
+        {"name": "confirmed:x", "b": 0.6, "d": 0, "root": "observation-one"},
+        {"name": "confirmed:x", "b": 0.6, "d": 0, "root": "observation-two"}
+      ],
+      "rules": []
+    }
+  }
+]
